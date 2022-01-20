@@ -1,0 +1,82 @@
+gunzip *gz; for i in `ls *.vcf|awk -F ".vcf" '{print $1}'`; do 
+  awk 'BEGIN{OFS="\t"}substr($1,1,1)!="#" && NF<12{
+   allT = refT = altT = allN = refN = altN = genoT = algo = frq ="NA";
+   n = split($8, p, ";");
+   for(m = 1;m <= n; m++){ split(p[m],info,"=");
+     if(info[1]=="CALLERS"||info[1]=="set") algo=info[2]}
+   j = split($9, a, ":"); split($NF, bT, ":");
+   if(NF != 10) split($10, bN, ":");
+   for(i = 1;i <= j; i++){
+     if(a[i] == "AD" && bT[i]~/,/ && frq=="NA"){
+       frq = "AD"; split(bT[i], tmp2, ",");
+       refT = tmp2[1]; altT = tmp2[2];
+       if(NF==11 && $10!="."){ split(bN[i],tmp3,",");
+         refN = tmp3[1]; altN = tmp3[2]}}
+     if(a[i] == "DP4" && frq=="NA"){
+       frq = "vs"; split(bT[i],tmp8,","); 
+       refT = tmp8[1]+tmp8[2]; altT = tmp8[3]+tmp8[4];
+       if(NF==11){ split(bN[i],tmp9,",");
+       refN = tmp9[1]+tmp9[2]; altN = tmp9[3]+tmp9[4]}}
+     if(a[i] == "NV" && !(bT[i]~/,/) && (frq=="NA"||frq=="pl")){
+       frq = "pl"; altT = bT[i]; if(NF == 11) altN = bN[i]}
+     if(a[i] == "NR" && !(bT[i]~/,/) && (frq=="NA"||frq=="pl")){
+       frq = "pl"; allT = bT[i]; if(NF == 11) allN = bN[i]}
+     if((a[i]==$4"U"||a[i]=="TAR") && (frq=="NA"||frq=="st")){
+       split(bT[i], tmp4, ","); refT = tmp4[1];
+       split(bN[i], tmp5, ","); refN = tmp5[1]; frq="st" }
+     if((a[i]==$5"U"||a[i]=="TIR") && (frq=="NA"||frq=="st")){ 
+       split(bT[i], tmp6, ","); altT = tmp6[1];
+       split(bN[i], tmp7, ","); altN = tmp7[1]; frq="st" }
+     if((a[i]=="RDF"||a[i]=="RDR") && (frq=="NA"||frq=="sa")){
+       frq="sa";  refT = (refT=="NA" ? 0 : refT) + bT[i];
+       if(NF==11) refN = (refN=="NA" ? 0 : refN) + bN[i] }
+     if((a[i]=="ADF"||a[i]=="ADR") && (frq=="NA"||frq=="sa")){
+       frq="sa";  altT = (altT=="NA" ? 0 : altT) + bT[i];
+       if(NF==11) altN = (altN=="NA" ? 0 : altN) + bN[i] }
+     if(a[i]=="GT") genoT = bT[i]; }
+   numAlt = split($5, alt, ","); for(x = 1;x <= numAlt; x++)
+   print $1,$2,$2+length($4)-1,$4,alt[x],$6,$7,algo,(frq=="pl" && allN!="NA" && altN!="NA"?allN-altN:refN),altN,(frq=="pl"?allT-altT: refT),altT,genoT,(altT>altN || altN=="NA"?"OK":"Swapped"),$3}' ${i}.vcf > ${i}.avinput; done
+ 
+for i in `ls *avinput`; do \
+ bedtools intersect -wa -a $i    -b MDv3.bed  | \
+ bedtools intersect -v  -a stdin -b LCR-hs37d5.bed | \
+ bedtools intersect -a stdin -b ucscGenePfam.b37.finalized.bed -wao| \
+ cut --complement -f16,17,18,20|awk '!a[$0]++'|awk -F "\t" 'BEGIN{mut1=""; dat=""}{mut2=$1" "$2" "$3" "$4" "$5; \
+if(mut1==mut2) dat=dat"|"$NF; else{ print dat; mut1=mut2; dat=$0}} END{print dat}' | awk 'NF>1' > ${i}2; done
+
+ls *.avinput2 | awk -F ".avinput2" '{print $1}'|parallel ' \
+  ./table_annovar.pl --otherinfo -buildver hg19 \
+   -out {} -nastring . -polish -remove -protocol refGene,clinvar_20200316,cosmic83,1000g2015aug_all,esp6500siv2_all,exac03nontcga,gnomad_exome,gnomad_genome,revel,dbnsfp33a \
+     -operation g,f,f,f,f,f,f,f,f,f \
+     {}.avinput2 ./humandb/'
+for w in `ls *.hg19_mult*|awk -F ".hg19_mult" '{print $1}'`; do \
+  grep -v intron ${w}.hg19_multianno.txt|awk 'NR!=1' > ${w}.temp;
+  grep intron ${w}.hg19_multianno.txt|awk -F "\t" '{for(i=1;i<NF;i++) if(i<=5||i>=NF-10) printf("%s\t",$i); printf("%s\n",$NF)}' > \
+${w}.intron; rm ${w}.hg19_multianno.txt; done; \
+my_awk='FNR == NR {h[$2]; next}{ \
+   if(NR==1) print; else { a=split($10, j, ","); \
+   for(i=1; i<=a; i++){ b=split(j[i], k, ":"); \
+   if(k[2] in h){ print $0"\t"k[b]; break }; \
+   if(a==i) print $0"\t."}}}'
+parallel " ./table_annovar.pl --otherinfo -buildver hg19 \
+   -out {.} -nastring . -polish -remove -protocol  refGene,clinvar_20200316,cosmic83,1000g2015aug_all,esp6500siv2_all,exac03nontcga,gnomad_exome,gnomad_genome,revel,dbnsfp33a \
+     -operation g,f,f,f,f,f,f,f,f,f \
+     -arg '-splicing 500',,,,,,,,, \
+     {.}.intron ./humandb/; 
+sed s/splicing/spliceRegion/g {.}.hg19_multianno.txt > {.}.temp2; \
+cat {.}.temp2 {.}.temp | awk -F '\t' '$my_awk' \
+     hg19_APPRIS_RefSeq105_Principal_Isoforms_finalized.txt - > \
+     {.}.hg19_multianno.txt2" ::: *.intron
+grep "" *.hg19_multianno.txt2 > SNV_normal.txt
+
+for i in `ls *.hg19_multianno.txt2`; do awk -F "\t" '{ \
+keep=1; for(w=27;w<=43 && keep;w++) keep=($w=="."||$w<0.001);
+if(keep||NR==1) print}' $i > ${i}.filtered_by_1000G; \
+done
+grep "" *.filtered_by_1000G >SNV_no_normal_TMB.txt
+
+for i in `ls *.hg19_multianno.txt2`; do awk -F "\t" '{ \
+keep=1; for(w=27;w<=43 && keep;w++) keep=($w=="."||$w<0.02);
+if(keep||NR==1) print}' $i > ${i}.filtered_by_1000G; \
+done
+grep "" *.filtered_by_1000G >SNV_no_normal_2pct.txt
